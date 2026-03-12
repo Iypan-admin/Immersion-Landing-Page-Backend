@@ -243,26 +243,51 @@ app.post('/admin/get-payouts', adminAuth, async (req, res) => {
 });
 
 // POST /admin/mark-payout-paid
+// Accepts optional `amount` from admin — if provided, updates the stored amount too
 app.post('/admin/mark-payout-paid', adminAuth, async (req, res) => {
-  const { payout_id } = req.body;
+  const { payout_id, amount } = req.body;
   try {
-    await pool.query(
-      `UPDATE payouts SET status='PAID', paid_at=NOW() WHERE id=$1`, [payout_id]
-    );
+    if (amount !== undefined && amount !== null) {
+      // Admin overrode the amount — update both amount and status
+      await pool.query(
+        `UPDATE payouts SET status='PAID', paid_at=NOW(), amount=$1 WHERE id=$2`,
+        [parseFloat(amount), payout_id]
+      );
+    } else {
+      // No amount change — just mark paid
+      await pool.query(
+        `UPDATE payouts SET status='PAID', paid_at=NOW() WHERE id=$1`,
+        [payout_id]
+      );
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update payout' });
   }
 });
 
-// POST /admin/mark-all-paid — mark all pending for one affiliate
+// POST /admin/mark-all-paid — bulk settle for one affiliate
+// Accepts `amounts` object: { [payout_id]: amount } for per-row overrides
 app.post('/admin/mark-all-paid', adminAuth, async (req, res) => {
-  const { ref_code } = req.body;
+  const { ref_code, amounts } = req.body;
   try {
-    await pool.query(
-      `UPDATE payouts SET status='PAID', paid_at=NOW()
-       WHERE influencer_ref_code=$1 AND status='PENDING'`, [ref_code]
-    );
+    if (amounts && typeof amounts === 'object' && Object.keys(amounts).length > 0) {
+      // Admin provided per-row amounts — update each individually
+      const updates = Object.entries(amounts).map(([id, amt]) =>
+        pool.query(
+          `UPDATE payouts SET status='PAID', paid_at=NOW(), amount=$1 WHERE id=$2 AND status='PENDING'`,
+          [parseFloat(amt) || 0, parseInt(id)]
+        )
+      );
+      await Promise.all(updates);
+    } else {
+      // No amount overrides — mark all pending as paid without changing amounts
+      await pool.query(
+        `UPDATE payouts SET status='PAID', paid_at=NOW()
+         WHERE influencer_ref_code=$1 AND status='PENDING'`,
+        [ref_code]
+      );
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update payouts' });
