@@ -9,15 +9,14 @@ const port = process.env.PORT || 5000;
 // ── CORS Configuration ──
 // Explicitly allowing your local environments and your live Railway frontend
 const allowedOrigins = [
-  'http://localhost:5173', // Vite default port
-  'http://localhost:3000', // Create React App default port
-  'https://immersion-landing-page-production.up.railway.app', // Your live frontend
-  process.env.FRONTEND_URL // Optional fallback if you set it in Railway variables
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://immersion-landing-page-production.up.railway.app', // Your live frontend URL
+  process.env.FRONTEND_URL // Fallback if set in Railway variables
 ].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl requests)
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -31,7 +30,6 @@ app.use(express.json());
 // ── Database Connection ──
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Railway requires SSL for external connections in production
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
@@ -39,7 +37,6 @@ const pool = new Pool({
 app.post('/api/leads', async (req, res) => {
   const { name, email, phone, language, level } = req.body;
 
-  // Basic validation
   if (!name || !email || !phone || !language || !level) {
     return res.status(400).json({ error: 'All fields are required' });
   }
@@ -63,7 +60,7 @@ app.post('/api/leads', async (req, res) => {
   }
 });
 
-// ── Start Server ──//
+// ── Start Server ──
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
