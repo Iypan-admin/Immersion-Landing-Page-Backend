@@ -11,8 +11,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
   'https://immersion-landing-page-production.up.railway.app',
-  'https://yourdomain.com',
-  'https://www.yourdomain.com',
+  'https://immersion.indianschoolformodernlanguages.com',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -35,6 +34,21 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
+// ── Run once on startup: add ame_code column if it doesn't exist ──
+// This is safe to run repeatedly — ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent
+async function runMigrations() {
+  try {
+    await pool.query(`
+      ALTER TABLE affiliates
+      ADD COLUMN IF NOT EXISTS ame_code VARCHAR(50) DEFAULT NULL;
+    `);
+    console.log('✅ Migration: ame_code column ready');
+  } catch (err) {
+    console.error('Migration warning (non-fatal):', err.message);
+  }
+}
+runMigrations();
+
 // ── Admin password middleware ─────────────────────────────────
 function adminAuth(req, res, next) {
   const { password } = req.body;
@@ -53,7 +67,7 @@ function generateRefCode(name) {
 
 // ── HEALTH CHECK ──────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: '🚀 Success Learning API running' });
+  res.json({ status: '🚀 ISML API running' });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -61,6 +75,8 @@ app.get('/', (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 // POST /api/leads — submit enquiry form
+// THE FIX: referral field was never being saved because the frontend
+// wasn't sending it. Frontend now sends { ...form, referral: refCode }.
 app.post('/api/leads', async (req, res) => {
   const { name, email, phone, language, level, referral } = req.body;
 
@@ -69,7 +85,7 @@ app.post('/api/leads', async (req, res) => {
   }
 
   try {
-    // Save lead
+    // Save lead — referral stores the ?ref= code from the URL
     const leadResult = await pool.query(
       `INSERT INTO leads (name, email, phone, language, level, referral)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -77,7 +93,7 @@ app.post('/api/leads', async (req, res) => {
     );
     const lead = leadResult.rows[0];
 
-    // If referral exists, create payout records
+    // If referral code exists, create payout records for the affiliate chain
     if (referral) {
       const affResult = await pool.query(
         `SELECT * FROM affiliates WHERE ref_code = $1`, [referral]
@@ -94,6 +110,7 @@ app.post('/api/leads', async (req, res) => {
         );
 
         // Level 2 payout — who referred the affiliate (₹50)
+        // This is the AP code chain: if this affiliate was referred_by another affiliate
         if (affiliate.referred_by) {
           const parentResult = await pool.query(
             `SELECT * FROM affiliates WHERE ref_code = $1`, [affiliate.referred_by]
@@ -162,7 +179,7 @@ app.post('/admin/download-leads', adminAuth, async (req, res) => {
   }
 });
 
-// POST /admin/get-affiliates
+// POST /admin/get-affiliates — now returns ame_code too
 app.post('/admin/get-affiliates', adminAuth, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -185,9 +202,9 @@ app.post('/admin/get-affiliates', adminAuth, async (req, res) => {
   }
 });
 
-// POST /admin/create-affiliate
+// POST /admin/create-affiliate — now accepts ame_code + referred_by (AP code)
 app.post('/admin/create-affiliate', adminAuth, async (req, res) => {
-  const { name, email, phone, referred_by, referred_by_name } = req.body;
+  const { name, email, phone, ame_code, referred_by } = req.body;
   if (!name || !email || !phone) {
     return res.status(400).json({ error: 'Name, email and phone are required' });
   }
@@ -202,29 +219,44 @@ app.post('/admin/create-affiliate', adminAuth, async (req, res) => {
     } while (attempts < 10);
 
     const result = await pool.query(
-      `INSERT INTO affiliates (name, email, phone, ref_code, referred_by, referred_by_name)
+      `INSERT INTO affiliates (name, email, phone, ref_code, ame_code, referred_by)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [name.trim(), email.trim(), phone.trim(), ref_code, referred_by || null, referred_by_name || null]
+      [
+        name.trim(),
+        email.trim(),
+        phone.trim(),
+        ref_code,
+        ame_code?.trim() || null,    // internal employee who hired this affiliate
+        referred_by?.trim() || null, // existing affiliate who recommended this person
+      ]
     );
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://yourdomain.com';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://immersion.indianschoolformodernlanguages.com';
     const link = `${frontendUrl}/?ref=${ref_code}`;
 
     res.json({ success: true, affiliate: result.rows[0], ref_code, link });
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ error: 'Affiliate already exists' });
-    res.status(500).json({ error: 'Failed to create affiliate' });
+    res.status(500).json({ error: 'Failed to create affiliate: ' + err.message });
   }
 });
 
-// POST /admin/edit-affiliate
+// POST /admin/edit-affiliate — now updates ame_code too
 app.post('/admin/edit-affiliate', adminAuth, async (req, res) => {
-  const { ref_code, name, email, phone, referred_by, referred_by_name } = req.body;
+  const { ref_code, name, email, phone, ame_code, referred_by } = req.body;
   try {
     await pool.query(
-      `UPDATE affiliates SET name=$1, email=$2, phone=$3, referred_by=$4, referred_by_name=$5
+      `UPDATE affiliates
+       SET name=$1, email=$2, phone=$3, ame_code=$4, referred_by=$5
        WHERE ref_code=$6`,
-      [name, email, phone, referred_by || null, referred_by_name || null, ref_code]
+      [
+        name,
+        email,
+        phone,
+        ame_code?.trim() || null,
+        referred_by?.trim() || null,
+        ref_code,
+      ]
     );
     res.json({ success: true });
   } catch (err) {
@@ -243,18 +275,15 @@ app.post('/admin/get-payouts', adminAuth, async (req, res) => {
 });
 
 // POST /admin/mark-payout-paid
-// Accepts optional `amount` from admin — if provided, updates the stored amount too
 app.post('/admin/mark-payout-paid', adminAuth, async (req, res) => {
   const { payout_id, amount } = req.body;
   try {
     if (amount !== undefined && amount !== null) {
-      // Admin overrode the amount — update both amount and status
       await pool.query(
         `UPDATE payouts SET status='PAID', paid_at=NOW(), amount=$1 WHERE id=$2`,
         [parseFloat(amount), payout_id]
       );
     } else {
-      // No amount change — just mark paid
       await pool.query(
         `UPDATE payouts SET status='PAID', paid_at=NOW() WHERE id=$1`,
         [payout_id]
@@ -266,13 +295,11 @@ app.post('/admin/mark-payout-paid', adminAuth, async (req, res) => {
   }
 });
 
-// POST /admin/mark-all-paid — bulk settle for one affiliate
-// Accepts `amounts` object: { [payout_id]: amount } for per-row overrides
+// POST /admin/mark-all-paid
 app.post('/admin/mark-all-paid', adminAuth, async (req, res) => {
   const { ref_code, amounts } = req.body;
   try {
     if (amounts && typeof amounts === 'object' && Object.keys(amounts).length > 0) {
-      // Admin provided per-row amounts — update each individually
       const updates = Object.entries(amounts).map(([id, amt]) =>
         pool.query(
           `UPDATE payouts SET status='PAID', paid_at=NOW(), amount=$1 WHERE id=$2 AND status='PENDING'`,
@@ -281,7 +308,6 @@ app.post('/admin/mark-all-paid', adminAuth, async (req, res) => {
       );
       await Promise.all(updates);
     } else {
-      // No amount overrides — mark all pending as paid without changing amounts
       await pool.query(
         `UPDATE payouts SET status='PAID', paid_at=NOW()
          WHERE influencer_ref_code=$1 AND status='PENDING'`,
