@@ -320,7 +320,7 @@ app.post('/admin/mark-all-paid', adminAuth, async (req, res) => {
   }
 });
 
-// POST /admin/download-payouts — CSV
+// POST /adminpage/download-payouts — CSV
 app.post('/admin/download-payouts', adminAuth, async (req, res) => {
   try {
     const result = await pool.query(`SELECT * FROM payouts ORDER BY created_at DESC`);
