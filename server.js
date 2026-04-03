@@ -49,6 +49,22 @@ async function runMigrations() {
 }
 runMigrations();
 
+// ══════════════════════════════════════════════════════════════
+// DATA FIX — run this SQL ONCE in your Railway/Postgres console
+// to correct the affiliates whose ame_code and referred_by were
+// entered swapped before the form bug was fixed:
+//
+// UPDATE affiliates
+// SET
+//   ame_code    = referred_by,
+//   referred_by = ame_code
+// WHERE ame_code IS NOT NULL OR referred_by IS NOT NULL;
+//
+// After running it, verify in the admin table that:
+//   AME Code column  → shows internal employee codes (e.g. IYPIN003)
+//   Referred By (AP) → shows affiliate codes (e.g. TUL995)
+// ══════════════════════════════════════════════════════════════
+
 // ── Admin password middleware ─────────────────────────────────
 function adminAuth(req, res, next) {
   const { password } = req.body;
@@ -320,7 +336,7 @@ app.post('/admin/mark-all-paid', adminAuth, async (req, res) => {
   }
 });
 
-// POST /adminpage/download-payouts — CSV
+// POST /admin/download-payouts — CSV
 app.post('/admin/download-payouts', adminAuth, async (req, res) => {
   try {
     const result = await pool.query(`SELECT * FROM payouts ORDER BY created_at DESC`);
